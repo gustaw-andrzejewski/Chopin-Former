@@ -1,0 +1,10 @@
+# data and testing
+data/*
+*.ipynb
+lightning_logs/
+
+# tokenizer
+tokenizer/
+
+#pycache
+__pycache__/
