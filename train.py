@@ -2,13 +2,12 @@ from pathlib import Path
 
 import lightning as L
 import torch
-import torch.nn as nn
 from miditok import REMI
 from miditok.pytorch_data import DataCollator, DatasetTok
 from torch.utils.data import DataLoader
 from torchtoolkit.data import create_subsets
 
-from model import Transformer
+from model import ChopinFormer
 
 
 class MaestroDataModule(L.LightningDataModule):
@@ -48,43 +47,6 @@ class MaestroDataModule(L.LightningDataModule):
         return DataLoader(self.subset_valid, num_workers=4, batch_size=self.batch_size, collate_fn=self.collator)
 
 
-class ChopinFormer(L.LightningModule):
-    def __init__(
-        self, vocab_size, embedding_dim, head_dim, num_heads, num_layers, max_seq_len, dropout, learning_rate
-    ):
-        super().__init__()
-        self.transformer = Transformer(
-            vocab_size, embedding_dim, head_dim, num_heads, num_layers, max_seq_len, dropout
-        )
-        self.loss = nn.CrossEntropyLoss()
-        self.learning_rate = learning_rate
-
-    def forward(self, x):
-        return self.transformer(x)
-
-    def generate(self, x):
-        return self.transformer.generate(x)
-
-    def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
-
-    def training_step(self, batch, batch_idx):
-        input_ids = batch["input_ids"]
-        labels = batch["labels"]
-        logits = self(input_ids)
-        loss = self.loss(logits.view(-1, logits.size(-1)), labels.view(-1))
-        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        input_ids = batch["input_ids"]
-        labels = batch["labels"]
-        logits = self(input_ids)
-        loss = self.loss(logits.view(-1, logits.size(-1)), labels.view(-1))
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        return {"val_loss": loss}
-
-
 if __name__ == "__main__":
     torch.set_float32_matmul_precision("high")
 
@@ -108,8 +70,8 @@ if __name__ == "__main__":
     )
 
     trainer = L.Trainer(
-        precision=16,
-        max_epochs=5,
+        precision="16-mixed",
+        max_epochs=2,
         accelerator="gpu",
         devices=1,
     )

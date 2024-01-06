@@ -1,4 +1,4 @@
-__all__ = ["Transformer"]
+__all__ = ["Transformer", "ChopinFormer"]
 
 
-from .model import Transformer
+from .model import ChopinFormer, Transformer
