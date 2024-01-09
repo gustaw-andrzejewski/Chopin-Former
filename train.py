@@ -2,6 +2,8 @@ from pathlib import Path
 
 import lightning as L
 import torch
+from lightning.pytorch.callbacks.early_stopping import EarlyStopping
+from lightning.pytorch.loggers import TensorBoardLogger
 from miditok import REMI
 from miditok.pytorch_data import DataCollator, DatasetTok
 from torch.utils.data import DataLoader
@@ -54,26 +56,31 @@ if __name__ == "__main__":
         data_dir="data/Maestro_tokens_bpe/",
         tokenizer_config="tokenizer/tokenizer_bpe.conf",
         batch_size=16,
-        max_seq_len=510,
-        min_seq_len=384,
+        max_seq_len=255,
+        min_seq_len=164,
     )
 
     model = ChopinFormer(
         vocab_size=10000,
         embedding_dim=512,
-        head_dim=64,
+        head_dim=256,
         num_heads=8,
-        num_layers=6,
-        max_seq_len=512,
-        dropout=0.2,
+        num_layers=12,
+        fcn_layer_size=2048,
+        max_seq_len=256,
+        dropout=0.3,
         learning_rate=1e-3,
     )
 
+    logger = TensorBoardLogger("lightning_logs", name="chopin_model")
+
     trainer = L.Trainer(
         precision="16-mixed",
-        max_epochs=2,
+        max_epochs=50,
         accelerator="gpu",
         devices=1,
+        logger=logger,
+        # callbacks=[EarlyStopping(monitor="val_loss", mode="min", patience=5)],
     )
 
     trainer.fit(model, data_module)
