@@ -37,8 +37,7 @@ class ChopinFormer(L.LightningModule):
         return self.transformer.generate(x)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.SGD(self.parameters(), lr=self.learning_rate, momentum=0.9)
-        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.learning_rate)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
         return {
             "optimizer": optimizer,
@@ -50,19 +49,11 @@ class ChopinFormer(L.LightningModule):
         labels = batch["labels"][:, 1:]
 
         logits = self(input_ids)
-        # Flatten the output for loss calculation using .reshape
         loss = self.loss(logits.reshape(-1, self.hparams.vocab_size), labels.reshape(-1))
 
-        # Accuracy calculation
         preds = torch.argmax(logits, dim=-1)
         acc = self.train_acc(preds.reshape(-1), labels.reshape(-1))
         self.log("train_acc", acc, on_step=True, on_epoch=True, prog_bar=True, logger=True)
-
-        # Logging for debugging
-        # if batch_idx % 10 == 0:  # Adjust the frequency as needed
-        #     print(
-        #         "train_sample", f"Input: {input_ids[0]} Preds: {preds[0]}, Labels: {labels[0]}", self.current_epoch
-        #     )
 
         self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
         return loss
@@ -72,17 +63,11 @@ class ChopinFormer(L.LightningModule):
         labels = batch["labels"][:, 1:]
 
         logits = self(input_ids)
-        # Flatten the output for loss calculation using .reshape
         loss = self.loss(logits.reshape(-1, self.hparams.vocab_size), labels.reshape(-1))
 
-        # Accuracy calculation
         preds = torch.argmax(logits, dim=-1)
         acc = self.val_acc(preds.reshape(-1), labels.reshape(-1))
         self.log("val_acc", acc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-
-        # # Logging for debugging
-        # if batch_idx % 10 == 0:  # Adjust the frequency as needed
-        #     print("val_sample", f"Preds: {preds[0]}, Labels: {labels[0]}", self.current_epoch)
 
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return {"val_loss": loss}

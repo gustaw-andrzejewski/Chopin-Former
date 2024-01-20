@@ -3,6 +3,7 @@ from pathlib import Path
 
 from miditok import REMI, TokenizerConfig
 
+# Define the base path relative to this script
 BASE_PATH = Path(__file__).parent.parent
 
 
@@ -35,11 +36,13 @@ def initialize_tokenizer():
     return REMI(config)
 
 
-def tokenize_dataset(tokenizer, midi_paths, tokenized_data_dir):
+def tokenize_dataset(tokenizer, midi_paths, tokenized_data_dir, bpe_tokens_path):
     """Tokenizes the dataset and applies BPE."""
     tokenizer.tokenize_midi_dataset(midi_paths, tokenized_data_dir)
-    tokenizer.learn_bpe(vocab_size=10000, tokens_paths=midi_paths, start_from_empty_voc=False)
-    tokenizer.save_params(TOKENIZER_DIR / "tokenizer.json")
+    token_files = list(tokenized_data_dir.glob("**/*.json"))
+    tokenizer.learn_bpe(vocab_size=10000, tokens_paths=token_files, start_from_empty_voc=False)
+    tokenizer.save_params(bpe_tokens_path)
+    tokenizer.apply_bpe_to_dataset(tokenized_data_dir, tokenized_data_dir)
 
 
 if __name__ == "__main__":
@@ -60,4 +63,4 @@ if __name__ == "__main__":
 
     # Get MIDI paths and tokenize the dataset
     midi_paths = list(DATASET_DIR.glob("**/*.mid")) + list(DATASET_DIR.glob("**/*.midi"))
-    tokenize_dataset(tokenizer, midi_paths, TOKENIZED_DATA_DIR)
+    tokenize_dataset(tokenizer, midi_paths, TOKENIZED_DATA_DIR, TOKENIZER_DIR / "tokenizer_bpe.conf")
