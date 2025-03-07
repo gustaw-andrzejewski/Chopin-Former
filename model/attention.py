@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class AttentionHead(nn.Module):
-    """Head of a self-attention"""
+class BaseAttentionHead(nn.Module):
+    """Base class for attention heads with shared query, key, value projections and masking"""
 
     def __init__(self, embedding_dim: int, head_dim: int, max_seq_len: int, dropout: float = 0.1):
         super().__init__()
@@ -13,25 +13,71 @@ class AttentionHead(nn.Module):
         self.value = nn.Linear(embedding_dim, head_dim)
         self.head_dim = head_dim
         self.dropout = nn.Dropout(dropout)
-        # Create a triangular mask with shape (max_seq_len, max_seq_len)
-        self.register_buffer("tril", torch.tril(torch.ones(max_seq_len, max_seq_len)))
+        self.scale_factor = head_dim**0.5
+        self.register_buffer("causal_mask", torch.tril(torch.ones(max_seq_len, max_seq_len)))
+
+    def _compute_qkv(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Project input tensor into query, key, and value representations"""
+        Q = self.query(x)
+        K = self.key(x)
+        V = self.value(x)
+        return Q, K, V
+
+    def _apply_causal_mask(self, attention_scores: torch.Tensor, seq_len: int) -> torch.Tensor:
+        """Apply causal masking to ensure tokens only attend to previous positions"""
+        mask_matrix = self.causal_mask[:seq_len, :seq_len]
+        attention_scores = attention_scores.masked_fill_(mask_matrix == 0, float("-inf"))
+        attention_probs = F.softmax(attention_scores, dim=-1)
+        return self.dropout(attention_probs)
+
+
+class AttentionHead(BaseAttentionHead):
+    """Single attention head with scaled dot-product attention and causal masking"""
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, T, _ = x.shape
-        Q = self.query(x)  # Compute query: shape [B, T, head_dim]
-        K = self.key(x)  # Compute key: shape [B, T, head_dim]
-        V = self.value(x)  # Compute value: shape [B, T, head_dim]
+        """Transform input sequence using self-attention mechanism"""
+        batch_size, seq_len, _ = x.shape
+        Q, K, V = self._compute_qkv(x)
 
-        # Scaled dot-product attention (using "@" for matrix multiplication)
-        att_weights = Q @ K.transpose(-2, -1) / (self.head_dim**0.5)  # shape: [B, T, T]
+        attention_scores = Q @ K.transpose(-2, -1) / (self.scale_factor)
 
-        # Use the precomputed triangular mask and slice to current sequence length
-        mask = self.tril[:T, :T]
-        att_weights = att_weights.masked_fill(mask == 0, float("-inf"))
-        att_weights = F.softmax(att_weights, dim=-1)
-        att_weights = self.dropout(att_weights)
+        attention_weights = self._apply_causal_mask(attention_scores, seq_len)
 
-        return att_weights @ V  # shape: [B, T, head_dim]
+        return attention_weights @ V
+
+
+class RelativeAttentionHead(BaseAttentionHead):
+    """Attention head that incorporates relative positional information into the attention computation
+    Inspired by: https://github.com/AliHaiderAhmad001/Self-Attention-with-Relative-Position-Representations"""
+
+    def __init__(
+        self,
+        embedding_dim: int,
+        head_dim: int,
+        max_relative_distance: int,
+        dropout: float = 0.1,
+        max_seq_len: int = 512,
+    ):
+        super().__init__(embedding_dim, head_dim, max_seq_len, dropout)
+        self.relative_positional_encoding = RelativePositionalEncoding(head_dim, max_relative_distance)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Transform input sequence using self-attention with relative positional encoding"""
+        batch_size, seq_len, _ = x.shape
+        Q, K, V = self._compute_qkv(x)
+
+        pos_encoding = self.relative_positional_encoding(seq_len, seq_len)
+
+        attention_scores = Q @ K.transpose(-2, -1)
+        relative_attention_scores = torch.sum(Q.unsqueeze(2) * pos_encoding.unsqueeze(0), dim=-1)
+
+        attention_weights = (attention_scores.add_(relative_attention_scores)) / (self.scale_factor)
+        attention_weights = self._apply_causal_mask(attention_weights, seq_len)
+
+        values = attention_weights @ V
+        relative_values = torch.sum(attention_weights.unsqueeze(-1) * pos_encoding.unsqueeze(0), dim=2)
+
+        return values + relative_values
 
 
 class MultiHeadAttention(nn.Module):
@@ -48,85 +94,37 @@ class MultiHeadAttention(nn.Module):
         max_relative_distance: int = 16,
     ):
         super().__init__()
-        if not use_relative_attention:
-            self.heads = nn.ModuleList(
-                [AttentionHead(embedding_dim, head_dim, max_seq_len, dropout) for _ in range(num_heads)]
-            )
-        else:
+
+        if use_relative_attention:
             self.heads = nn.ModuleList(
                 [
                     RelativeAttentionHead(embedding_dim, head_dim, max_relative_distance, dropout, max_seq_len)
                     for _ in range(num_heads)
                 ]
             )
+        else:
+            self.heads = nn.ModuleList(
+                [AttentionHead(embedding_dim, head_dim, max_seq_len, dropout) for _ in range(num_heads)]
+            )
+
         self.projection = nn.Linear(num_heads * head_dim, embedding_dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Concatenate outputs from each head along the last dimension.
-        x = torch.cat([head(x) for head in self.heads], dim=-1)
+        """Process input through attention heads and project their combined output"""
+        head_outputs = torch.stack([head(x) for head in self.heads], dim=-2)
+
+        B, T, num_heads, head_dim = head_outputs.shape
+        x = head_outputs.reshape(B, T, num_heads * head_dim)
+
         x = self.projection(x)
+        x = self.dropout(x)
+
         return x
 
 
-class RelativeAttentionHead(nn.Module):
-    """
-    Attention head with relative positional encoding
-    Inspired by: https://github.com/AliHaiderAhmad001/Self-Attention-with-Relative-Position-Representations
-    """
-
-    def __init__(
-        self,
-        embedding_dim: int,
-        head_dim: int,
-        max_relative_distance: int,
-        dropout: float = 0.1,
-        max_seq_len: int = 512,  # Added max_seq_len parameter for mask size.
-    ):
-        super().__init__()
-        self.query = nn.Linear(embedding_dim, head_dim)
-        self.key = nn.Linear(embedding_dim, head_dim)
-        self.value = nn.Linear(embedding_dim, head_dim)
-        self.head_dim = head_dim
-        self.dropout = nn.Dropout(dropout)
-        self.relative_positional_encoding = RelativePositionalEncoding(head_dim, max_relative_distance)
-        # Register a triangular mask of size (max_seq_len, max_seq_len)
-        self.register_buffer("tril", torch.tril(torch.ones(max_seq_len, max_seq_len)))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, T, _ = x.shape
-        Q = self.query(x)  # [B, T, head_dim]
-        K = self.key(x)  # [B, T, head_dim]
-        V = self.value(x)  # [B, T, head_dim]
-
-        # Generate relative bias matrices for keys and values.
-        k_bias_matrix = self.relative_positional_encoding(
-            T, T
-        )  # shape: [T, T, head_dim] or [T, T] if implemented differently
-        v_bias_matrix = self.relative_positional_encoding(T, T)
-
-        # Compute self-attention scores.
-        att_scores = Q @ K.transpose(-2, -1)
-        # Compute relative attention scores.
-        rel_att_scores = (Q.permute(1, 0, 2) @ k_bias_matrix.transpose(-2, -1)).transpose(0, 1)
-        # Sum and scale.
-        att_weights = (att_scores + rel_att_scores) / (self.head_dim**0.5)
-
-        # Apply triangular mask.
-        mask = self.tril[:T, :T]
-        att_weights = att_weights.masked_fill(mask == 0, float("-inf"))
-        att_weights = F.softmax(att_weights, dim=-1)
-        att_weights = self.dropout(att_weights)
-
-        # Compute weighted sum for values.
-        values = att_weights @ V
-        # Compute relative representation for values.
-        rel_values = torch.matmul(att_weights.permute(1, 0, 2), v_bias_matrix).transpose(0, 1)
-
-        return values + rel_values
-
-
 class RelativePositionalEncoding(nn.Module):
-    """Relative positional encoding"""
+    """Relative positional encodings for capturing token-pair relationships"""
 
     def __init__(self, relative_embedding_dim: int, max_relative_distance: int):
         super().__init__()
@@ -135,12 +133,28 @@ class RelativePositionalEncoding(nn.Module):
             torch.empty((2 * max_relative_distance + 1, relative_embedding_dim))
         )
         nn.init.xavier_uniform_(self.position_embeddings)
+        self._cache = {}
 
     def forward(self, query_length: int, key_length: int) -> torch.Tensor:
-        """Generate relative positional encoding"""
-        query_indices = torch.arange(query_length)
-        key_indices = torch.arange(key_length)
-        distance_matrix = query_indices.unsqueeze(0) - key_indices.unsqueeze(1)
-        distance_matrix = torch.clamp(distance_matrix, -self.max_relative_distance, self.max_relative_distance)
-        distance_matrix = distance_matrix + self.max_relative_distance
-        return self.position_embeddings[distance_matrix]
+        """Generate distance-based position encodings for all query-key pairs"""
+        cache_key = (query_length, key_length)
+
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        device = self.position_embeddings.device
+        query_positions = torch.arange(query_length, device=device)
+        key_positions = torch.arange(key_length, device=device)
+
+        relative_distances = query_positions.unsqueeze(0) - key_positions.unsqueeze(1)
+        clamped_distances = torch.clamp(
+            relative_distances, -self.max_relative_distance, self.max_relative_distance
+        )
+        embedding_indices = clamped_distances + self.max_relative_distance
+
+        relative_embeddings = self.position_embeddings[embedding_indices]
+
+        if len(self._cache) < 10:
+            self._cache[cache_key] = relative_embeddings
+
+        return relative_embeddings
