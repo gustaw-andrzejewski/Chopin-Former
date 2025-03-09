@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from torchmetrics import Accuracy
 
-from transformer import Transformer
+from model.transformer import Transformer
 
 
 class ChopinFormer(L.LightningModule):

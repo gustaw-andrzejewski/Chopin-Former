@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from attention import MultiHeadAttention
+from model.attention import MultiHeadAttention
 
 
 class Transformer(nn.Module):
