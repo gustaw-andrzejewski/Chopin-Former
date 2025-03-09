@@ -1,11 +1,11 @@
-# data and testing
-dataset/*
+# # data and testing
+data/
+tokenized_data/
+tokenizer/
 *.ipynb
 lightning_logs/
 wandb/
 
-# tokenizer
-tokenizer/
-
 #pycache
 __pycache__/
+
